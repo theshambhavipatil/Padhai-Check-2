@@ -1,0 +1,162 @@
+\documentclass[10pt,a4paper]{article}
+
+% NOTE: swap this preamble for the workshop's official style file (e.g. its .sty/.cls)
+% before submission. The body below uses only standard packages.
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+
+\setlist{nosep,leftmargin=*}
+
+\title{Reading Words, Not Volume: A Tone-Invariance Safety Evaluation of an\\
+Emotion-Aware Multi-Agent Misinformation Verifier for Exam Students}
+
+\author{%
+  Author One \\ Affiliation \\ \texttt{email} \and
+  Author Two \\ Affiliation \\ \texttt{email}
+}
+\date{} % TODO: remove authors for double-blind venues
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Exam-related rumours (postponements, paper leaks, fake circulars) spread quickly on messaging apps in India and reach students when they are most vulnerable. We describe \textsc{Padhai Check}, a multi-agent pipeline built on a single LLM that verifies such claims in English, Hindi and Hinglish, and that adapts the \emph{delivery} of its answer to the student's emotional state without changing the verdict. We then ask a safety question that is easy to overlook in emotion-aware systems: do the system's safety-relevant \emph{decisions} depend on how loudly a student writes rather than on what they say? Using paired prompts (9 situations $\times$ 4 tones, 3 repeats) with labels defined by the situation, we find that crisis escalation and support detection were unaffected by tone, but that the original prompt, which treated punctuation and capitalisation as stress cues, wrongly flagged 9 of 12 loudly written factual questions as distress while handling their calm versions correctly. A prompt change, a retry, and a self-harm keyword fallback removed all observed tone-dependent errors in our test set (0 of 103 valid responses), and an independent re-run in the Inspect framework scored 107 of 108. The test set is small, the fix was tuned on it, and the study is not a clinical validation; we discuss these limits and what a stronger evaluation would require.
+\end{abstract}
+
+\section{Introduction}
+Misinformation about exams has consequences that are immediate and measurable: a student who believes a false ``exam postponed'' forward may stop preparing, and a ``paper leaked'' rumour can trigger panic. Such claims circulate in family and coaching WhatsApp groups, are written in code-mixed Hinglish, and arrive during the weeks of highest stress. Fact-checking alone is therefore insufficient; the same verdict may need to be communicated differently to a calm student than to one who is panicking.
+
+Adapting a response to a user's emotional state creates a second, less visible risk. If the system infers distress from surface features of the text, such as exclamation marks or capital letters, its \emph{decisions} (whether to offer support, whether to escalate self-harm language) may track writing style rather than meaning. This can fail in two directions: a quietly written statement of intent to self-harm may be treated as non-urgent, and a loudly written factual question may be answered with unrequested coping advice instead of a fact-check.
+
+We make three contributions:
+\begin{enumerate}
+  \item A description of a seven-agent verification pipeline in which a wellbeing agent changes the \emph{delivery} but never the \emph{verdict} (Section~\ref{sec:system}).
+  \item A paired-prompt, situation-labelled protocol for testing tone-invariance of safety decisions, with a reproducible harness (Section~\ref{sec:eval}).
+  \item Evidence that the original system had a tone-dependent false-positive failure, the mitigations we applied, and a candid account of what the evidence does and does not show (Sections~\ref{sec:results}--\ref{sec:limits}).
+\end{enumerate}
+
+% TODO(related work): add 1--2 short paragraphs on (i) automated fact-checking and
+% misinformation spread, (ii) safety of mental-health and student-support chatbots,
+% (iii) consistency/robustness testing of LLM behaviour under paraphrase. Cite only
+% sources you have read.
+
+\section{System}\label{sec:system}
+\textsc{Padhai Check} is a FastAPI service with a React front end. A single orchestrator calls seven agents, each an LLM call with a narrow prompt, using Gemini~2.5~Flash~\cite{comanici2025gemini} at temperature 0.3. Table~\ref{tab:agents} summarises the roles.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}clp{8.2cm}@{}}
+\toprule
+\# & Agent & Role \\
+\midrule
+1 & Wellbeing & Runs first on the \emph{original} message; detects distress and self-harm language; writes a short supportive Hinglish note only if needed. \\
+2 & Ingestion & Normalises English/Hindi/Hinglish; extracts exams, bodies, dates; summarises. \\
+3 & Claim & Extracts the single main claim in neutral language; assigns a category (6 implemented) and urgency. \\
+4 & Fact-check & Produces a verdict (True/False/Misleading/Unverified) with short reasoning. \\
+5 & Explainability & Writes a bilingual explanation, action steps and source pointers. \\
+6 & Trend & Places the claim in known rumour patterns and seasonal timing. \\
+7 & Summarization & Optional one-line summary. \\
+\bottomrule
+\end{tabular}
+\caption{Pipeline agents, in execution order. Agents 2--6 form the verification chain; if the wellbeing agent detects stress and no real claim is found, the chain is skipped and only the support message is returned.}
+\label{tab:agents}
+\end{table}
+
+\paragraph{Design principle: delivery, not verdict.}
+The wellbeing agent runs on the unedited message so that no emotional signal is lost to normalisation. Its output is rendered in a visually separate card; it does not feed the fact-check agent, so empathy cannot soften or distort a verdict.
+
+\paragraph{What the system does not do (yet).}
+The fact-check agent answers from the model's built-in knowledge; there is no live retrieval from official sources. Displayed confidence is a fixed value per verdict, not a calibrated probability, and the explainability agent's evidence list is model-generated. These are limitations of the prototype and are discussed in Section~\ref{sec:limits}.
+
+\section{Tone-invariance evaluation}\label{sec:eval}
+\paragraph{Property.}
+For the same underlying situation, the agent should make the same \emph{decisions}---detect distress or not, escalate self-harm or not, provide support of comparable quality---however calmly or loudly the message is written. Different \emph{wording} of the reply is expected; different \emph{decisions} are not.
+
+\paragraph{Test design.}
+We wrote 9 situations, each in 4 tones (calm, neutral, stressed, panicked/all-caps), giving 36 inputs, each run 3 times (108 calls per condition). Five situations call for support (exam anxiety, self-doubt, overwhelm, sleep loss, parental pressure); two are crisis situations in which self-harm must be escalated \emph{even when calmly worded}; two are controls, factual questions with no personal distress that must \emph{not} be treated as stress even when written loudly. Expected labels derive from the situation, never from the tone, so any tone-driven deviation is a failure by construction.
+
+\paragraph{Measures.}
+We recorded whether stress was detected, whether the message was escalated, reply length, and whether crisis replies pointed to help (a lenient keyword check). Two independent LLM judges (\texttt{gpt-oss-120b} and \texttt{Qwen3-30B}, following the LLM-as-a-judge approach~\cite{zheng2023judging}) scored empathy, practicality, safety and tone quality on a 1--5 scale. Calls with unparseable output are reported and, in the custom harness, excluded from rates; an independent re-run in the Inspect framework~\cite{inspect2024} scores them as incorrect. Intervals are 95\% Wilson intervals~\cite{wilson1927}.
+
+\paragraph{Models.}
+Gemini~2.5~Flash (the production model) was queried through OpenRouter. A smaller model (Llama~3.1~8B) was run on the original prompt for comparison. Total API spend for all runs was about US\$0.35.
+
+\section{Results}\label{sec:results}
+\paragraph{Baseline: safety decisions were tone-invariant, but one flaw was not.}
+With the original prompt, support was detected in all 60 of 60 valid support trials and crisis inputs were escalated in all 23 of 23 valid trials, in every tone, including the calmly worded self-harm statement. Reply length was flat across tones (10.3--11.3 sentences). The exception was the control group (Table~\ref{tab:controls}): loudly written factual questions were wrongly treated as distress in 9 of 12 trials. The original prompt listed punctuation and capitals as stress indicators.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & Calm & Neutral & Stressed & Panicked \\
+\midrule
+Original prompt & 6/6 & 6/6 & 3/6 & 0/6 \\
+After fix & 6/6 & 6/6 & 6/6 & 6/6 \\
+\bottomrule
+\end{tabular}
+\caption{Controls (factual questions, no distress): trials correctly \emph{not} flagged as stress, by tone. Each cell is 2 prompts $\times$ 3 repeats. Example: ``\textsc{NEET RESULT ON JUNE 14!!! IS THIS REAL???!!! TELL ME NOW!!!}'' received a breathing-exercise reply under the original prompt instead of a fact-check.}
+\label{tab:controls}
+\end{table}
+
+\paragraph{After the fix.}
+Table~\ref{tab:summary} summarises the counts. After the changes described in Section~\ref{sec:fix}, no incorrect decisions were observed among 103 valid responses, and every escalated reply pointed to help under our lenient check. Five of 108 calls returned unparseable output (versus one at baseline), three of them on crisis inputs. An independent Inspect re-run, which scores unparseable output as incorrect, gave 107 of 108 (0.991, SE 0.009); its single miss was a reply truncated mid-JSON, not a wrong decision.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Check (all tones) & Original & After fix \\
+\midrule
+Support detected when needed & 60/60 & 58/58 \\
+Self-harm escalated & 23/23 & 21/21 \\
+Loud factual question wrongly flagged & 9/12 & 0/12 \\
+Unparseable replies & 1/108 & 5/108 \\
+Inspect re-run (failures scored) & --- & 107/108 \\
+\bottomrule
+\end{tabular}
+\caption{Summary counts over valid responses (unparseable replies excluded except in the Inspect row). Wilson 95\% intervals for the perfect cells are roughly 86--100\% (23/23), 85--100\% (21/21) and 76--100\% (12/12), reflecting the small sample.}
+\label{tab:summary}
+\end{table}
+
+\paragraph{Judged quality.}
+Both judges scored support and crisis replies between 4.7 and 5.0 on all four dimensions in every tone, with no consistent ordering by tone, and agreed within one point on empathy, practicality and tone quality in all cases (75--84\% on safety). Scores sit near the ceiling, so this is weak evidence of equal quality.
+
+\paragraph{A smaller model.}
+Llama~3.1~8B showed the same false-positive pattern (1 of 4 panicked controls correct), returned unusable output in 8 of 72 calls (5 on crisis inputs), and pointed to help in only 1 of 11 valid crisis replies, so it is not a safe drop-in for this role.
+
+\section{Mitigations}\label{sec:fix}
+\begin{enumerate}
+  \item \textbf{Prompt.} Punctuation and capitalisation are context only; distress is judged from what the student says about themselves; a factual question without expressed personal worry is not stress; calm wording never lowers the severity of self-harm statements, which always set \texttt{escalate=true}.
+  \item \textbf{Retry.} One retry when the model reply cannot be parsed. The original code silently returned ``no stress'' on a failed parse, which could have dropped a self-harm message.
+  \item \textbf{Safety net.} If both attempts fail and the text matches clear self-harm patterns (English and Hinglish), return an escalating message with a trusted-adult prompt and a national helpline, instead of ``no stress''.
+\end{enumerate}
+
+\section{Limitations and ethical considerations}\label{sec:limits}
+\paragraph{Evidence.}
+The test set is small (9 situations, 36 inputs); repeats of one input are not independent, so the loud-versus-quiet contrast rests on only four distinct loud prompts and we make no inferential claim beyond the descriptive counts. The fix was written after seeing the failures and evaluated on the same inputs, so post-fix numbers are optimistic; a held-out set is required. Labels were assigned by a single author, and treating a panicked factual question as ``not distress'' is a judgement call. The help-resource check counts any mention of a counsellor, parent or teacher, and a sample calm-crisis reply contained no helpline number. The judges are inexpensive models near their ceiling and were not validated against human raters. The retry and fallback were verified offline with a forced-failure stub rather than end-to-end. Truncation is the likely cause of the parse failures, but this rests on one observed case.
+
+\paragraph{System.}
+Verdicts depend on model knowledge and can be wrong about recent events; confidence is a constant per verdict; the model-generated evidence list can contain inaccurate or fabricated sources and should not be presented as verified. Claim history and trends are held in memory and match exact strings, so paraphrases of one rumour are counted separately.
+
+\paragraph{Ethics.}
+This is a behavioural consistency check, not a clinical validation, and the system is not a crisis service. Crisis handling should be reviewed by qualified counsellors before use with students. Messages may contain sensitive emotional content and should be retained only as long as needed, with consent for any human hand-off. Replies should remain gender-neutral and culturally appropriate.
+
+\section{Conclusion}
+In an emotion-aware verifier, tone can silently steer safety decisions. In our tests the escalation of self-harm language did not depend on tone, but the original prompt treated loud writing as distress and answered factual questions with unrequested coping advice. Removing surface-style cues from the stress criteria, retrying unparseable replies, and adding a self-harm fallback eliminated the observed errors, subject to the caveats above. The paired, situation-labelled protocol is cheap and reusable. Next steps are a held-out, counsellor-labelled set covering Hindi and Hinglish, sarcasm and multi-turn dialogue; running the same test on the full pipeline to confirm that verdicts are identical across tones; replacing model-generated evidence with retrieved sources; and always including a helpline in escalated replies.
+
+\paragraph{Reproducibility.}
+Code, prompts, inputs, raw outputs and the Inspect task are in the accompanying repository (\texttt{backend/evals/}).
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
